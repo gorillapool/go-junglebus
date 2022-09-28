@@ -1,0 +1,22 @@
+// protoc --go_out=paths=source_relative:. client/response.proto
+syntax = "proto3";
+package server;
+option go_package  = "/client";
+
+message TransactionResponse {
+  string id = 1;
+  string block_hash = 2;
+  uint32 block_height = 3;
+  uint64 block_index = 4;
+  uint32 block_time = 5;
+  bytes transaction = 6;
+  bytes merkle = 7;
+}
+
+message ControlResponse {
+  uint32 statusCode = 1;
+  string status = 2;
+  string message = 3;
+  uint32 block = 4;
+  uint64 transactions = 5;
+}
