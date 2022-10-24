@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/centrifugal/centrifuge-go v0.9.3
-	github.com/stretchr/testify v1.8.0
+	github.com/stretchr/testify v1.8.1
 	google.golang.org/protobuf v1.28.1
 )
 
