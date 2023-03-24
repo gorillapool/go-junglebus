@@ -20,7 +20,7 @@ func main() {
 
 	argsWithoutProg := os.Args[1:]
 	if len(argsWithoutProg) == 0 {
-		panic("no address given")
+		log.Fatalln("no address given")
 	}
 	address := argsWithoutProg[0]
 

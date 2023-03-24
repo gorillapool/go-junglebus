@@ -13,19 +13,20 @@ import (
 var DefaultServer = "junglebus.gorillapool.io"
 
 // ClientOps are used for client options
-type ClientOps func(c *JungleBusClient)
+type ClientOps func(c *Client)
 
-// JungleBusClient is the go-junglebus client
-type JungleBusClient struct {
+// Client is the go-junglebus client
+type Client struct {
 	transports.TransportService
 	transport        transports.TransportService
 	transportOptions []transports.ClientOps
+	subscription     *Subscription
 	debug            bool
 }
 
 // New create a new jungle bus client
-func New(opts ...ClientOps) (*JungleBusClient, error) {
-	client := &JungleBusClient{}
+func New(opts ...ClientOps) (*Client, error) {
+	client := &Client{}
 
 	client.setDefaultOptions()
 
@@ -36,23 +37,23 @@ func New(opts ...ClientOps) (*JungleBusClient, error) {
 	return client, nil
 }
 
-func (jb *JungleBusClient) setDefaultOptions() {
+func (jb *Client) setDefaultOptions() {
 	jb.transport, _ = transports.NewTransport(
 		transports.WithHTTP(DefaultServer),
 	)
 }
 
 // SetDebug turn the debugging on or off
-func (jb *JungleBusClient) SetDebug(debug bool) {
+func (jb *Client) SetDebug(debug bool) {
 	jb.debug = debug
 }
 
 // IsDebug return the debugging status
-func (jb *JungleBusClient) IsDebug() bool {
+func (jb *Client) IsDebug() bool {
 	return jb.debug
 }
 
 // GetTransport returns the current transport service
-func (jb *JungleBusClient) GetTransport() *transports.TransportService {
+func (jb *Client) GetTransport() *transports.TransportService {
 	return &jb.transport
 }
