@@ -211,7 +211,7 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		if err = proto.Unmarshal(e.Data, controlResponse); err != nil {
 			eventHandler.OnError(err)
 		} else {
-			if controlResponse.Block > 0 {
+			if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
 				lastBlock = uint64(controlResponse.Block)
 			}
 			eventHandler.OnStatus(controlResponse)
