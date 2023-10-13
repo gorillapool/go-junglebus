@@ -10,7 +10,10 @@ import (
 func WithHTTP(serverURL string) ClientOps {
 	return func(c *Client) {
 		if c != nil {
-			c.transportOptions = append(c.transportOptions, transports.WithHTTP(serverURL))
+			c.transport, _ = transports.NewTransport(
+				transports.WithHTTP(serverURL),
+			)
+			// c.transportOptions = append(c.transportOptions, transports.WithHTTP(serverURL))
 		}
 	}
 }
