@@ -77,10 +77,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		WriteTimeout:       2 * time.Second,
 		HandshakeTimeout:   30 * time.Second,
 		MaxServerPingDelay: 30 * time.Second,
+		EnableCompression:  true,
 	})
 
 	centrifugeClient.OnConnecting(func(e centrifuge.ConnectingEvent) {
-		// are we reconnecting?
 		if jb.subscription != nil {
 			eventHandler.OnStatus(&models.ControlResponse{
 				StatusCode: uint32(StatusConnecting),
