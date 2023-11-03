@@ -2,7 +2,6 @@ package junglebus
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -23,7 +22,13 @@ type Subscription struct {
 	subscriptions    map[string]*centrifuge.Subscription
 }
 
+type pubEvent struct {
+	Channel string
+	Data    []byte
+}
+
 func (s *Subscription) Unsubscribe() (err error) {
+	close <- struct{}{}
 	for _, sub := range s.subscriptions {
 		err = sub.Unsubscribe()
 	}
@@ -33,6 +38,7 @@ func (s *Subscription) Unsubscribe() (err error) {
 }
 
 func (jb *Client) Unsubscribe() (err error) {
+	close <- struct{}{}
 	for _, sub := range jb.subscription.subscriptions {
 		if err = sub.Unsubscribe(); err != nil {
 			return err
@@ -45,10 +51,12 @@ func (jb *Client) Unsubscribe() (err error) {
 	return nil
 }
 
-func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
+var currentBlock uint64
+var close = make(chan struct{})
 
+func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
 	var subs *Subscription
-	lastBlock := fromBlock
+	currentBlock = fromBlock
 
 	var err error
 	token := jb.transport.GetToken()
@@ -85,10 +93,14 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			eventHandler.OnStatus(&models.ControlResponse{
 				StatusCode: uint32(StatusConnecting),
 				Status:     "reconnecting",
-				Message:    "Reconnecting to server at block " + strconv.FormatUint(lastBlock, 10),
+				Message:    "Reconnecting to server at block " + strconv.FormatUint(currentBlock, 10),
 			})
 			_ = jb.Unsubscribe()
-			_, _ = jb.Subscribe(ctx, subscriptionID, lastBlock, eventHandler)
+			time.Sleep(500 * time.Millisecond)
+			_, err = jb.Subscribe(ctx, subscriptionID, currentBlock, eventHandler)
+			if err != nil {
+				eventHandler.OnError(err)
+			}
 			return
 		}
 
@@ -152,28 +164,25 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			Message:    "Unsubscribed from " + e.Channel,
 		})
 	})
+	pubChan := make(chan *pubEvent, 100000)
+	go handlePubChan(pubChan, eventHandler, jb)
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
-		var transaction *models.TransactionResponse
 		if strings.Contains(e.Channel, ":control") {
-			var control *models.ControlResponse
-			if err = json.Unmarshal(e.Data, &control); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnStatus(control)
+			pubChan <- &pubEvent{
+				Channel: "control",
+				Data:    e.Data,
 			}
 		} else if strings.Contains(e.Channel, ":mempool") {
-			if err = json.Unmarshal(e.Data, &transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnMempool(transaction)
+			pubChan <- &pubEvent{
+				Channel: "mempool",
+				Data:    e.Data,
 			}
 		} else {
-			if err = json.Unmarshal(e.Data, &transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnTransaction(transaction)
+			pubChan <- &pubEvent{
+				Channel: "main",
+				Data:    e.Data,
 			}
 		}
 	})
@@ -207,14 +216,9 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		return nil, err
 	}
 	subs.subscriptions["control"].OnPublication(func(e centrifuge.PublicationEvent) {
-		controlResponse := &models.ControlResponse{}
-		if err = proto.Unmarshal(e.Data, controlResponse); err != nil {
-			eventHandler.OnError(err)
-		} else {
-			if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
-				lastBlock = uint64(controlResponse.Block)
-			}
-			eventHandler.OnStatus(controlResponse)
+		pubChan <- &pubEvent{
+			Channel: "control",
+			Data:    e.Data,
 		}
 	})
 
@@ -222,12 +226,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
 			return nil, err
 		}
-		transaction := &models.TransactionResponse{}
 		subs.subscriptions["main"].OnPublication(func(e centrifuge.PublicationEvent) {
-			if err = proto.Unmarshal(e.Data, transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnTransaction(transaction)
+			pubChan <- &pubEvent{
+				Channel: "main",
+				Data:    e.Data,
 			}
 		})
 	}
@@ -236,12 +238,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		if subs.subscriptions["mempool"], err = subs.startSubscription(`query:` + subscriptionID + `:mempool`); err != nil {
 			return nil, err
 		}
-		transaction := &models.TransactionResponse{}
 		subs.subscriptions["mempool"].OnPublication(func(e centrifuge.PublicationEvent) {
-			if err = proto.Unmarshal(e.Data, transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnMempool(transaction)
+			pubChan <- &pubEvent{
+				Channel: "mempool",
+				Data:    e.Data,
 			}
 		})
 	}
@@ -268,4 +268,58 @@ func (s *Subscription) startSubscription(subscription string) (*centrifuge.Subsc
 	}
 
 	return sub, nil
+}
+
+func handlePubChan(pubChan chan *pubEvent, eventHandler EventHandler, jb *Client) {
+	for {
+		select {
+		case e := <-pubChan:
+			switch e.Channel {
+			case "control":
+				status := &models.ControlResponse{}
+				if err := proto.Unmarshal(e.Data, status); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					// log.Printf("[STATUS]: %d: %s", status.StatusCode, status.Message)
+					if status.StatusCode == uint32(SubscriptionBlockDone) {
+						currentBlock = uint64(status.Block) + 1
+					}
+					eventHandler.OnStatus(status)
+				}
+			case "main":
+				tx := &models.TransactionResponse{}
+				if err := proto.Unmarshal(e.Data, tx); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					if len(tx.Transaction) == 0 {
+						txData, err := jb.GetTransaction(context.Background(), tx.Id)
+						if err != nil {
+							eventHandler.OnError(err)
+							break
+						}
+						tx.Transaction = txData.Transaction
+					}
+					// log.Printf("[TX]: %d %d - %d: %v", tx.BlockHeight, tx.BlockIndex, len(tx.Transaction), tx.Id)
+					eventHandler.OnTransaction(tx)
+				}
+			case "mempool":
+				tx := &models.TransactionResponse{}
+				if err := proto.Unmarshal(e.Data, tx); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					if len(tx.Transaction) == 0 {
+						txData, err := jb.GetTransaction(context.Background(), tx.Id)
+						if err != nil {
+							eventHandler.OnError(err)
+							break
+						}
+						tx.Transaction = txData.Transaction
+					}
+					eventHandler.OnMempool(tx)
+				}
+			}
+		case <-close:
+			return
+		}
+	}
 }
