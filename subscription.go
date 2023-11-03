@@ -49,10 +49,13 @@ func (jb *Client) Unsubscribe() (err error) {
 	return nil
 }
 
+var pubChan chan *pubEvent
+var lastBlock uint64
+
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
 
 	var subs *Subscription
-	lastBlock := fromBlock
+	lastBlock = fromBlock
 
 	var err error
 	token := jb.transport.GetToken()
@@ -84,8 +87,6 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		EnableCompression:  true,
 	})
 
-	pubChan := make(chan *pubEvent, 100000)
-
 	centrifugeClient.OnConnecting(func(e centrifuge.ConnectingEvent) {
 		if jb.subscription != nil {
 			eventHandler.OnStatus(&models.ControlResponse{
@@ -99,6 +100,9 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		}
 
 		jb.subscription = subs
+		close(pubChan)
+		pubChan = make(chan *pubEvent, 100000)
+		go handlePubChan(eventHandler, jb)
 
 		eventHandler.OnStatus(&models.ControlResponse{
 			StatusCode: uint32(StatusConnecting),
@@ -204,53 +208,8 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		subscriptions:    map[string]*centrifuge.Subscription{},
 	}
 
-	go func() {
-		for {
-			e := <-pubChan
-			switch e.Channel {
-			case "control":
-				controlResponse := &models.ControlResponse{}
-				if err = proto.Unmarshal(e.Data, controlResponse); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
-						lastBlock = uint64(controlResponse.Block)
-					}
-					eventHandler.OnStatus(controlResponse)
-				}
-			case "main":
-				transaction := &models.TransactionResponse{}
-				if err = proto.Unmarshal(e.Data, transaction); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					if len(transaction.Transaction) == 0 {
-						txData, err := jb.GetTransaction(context.Background(), transaction.Id)
-						if err != nil {
-							eventHandler.OnError(err)
-							continue
-						}
-						transaction.Transaction = txData.Transaction
-					}
-					eventHandler.OnTransaction(transaction)
-				}
-			case "mempool":
-				transaction := &models.TransactionResponse{}
-				if err = proto.Unmarshal(e.Data, transaction); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					if len(transaction.Transaction) == 0 {
-						txData, err := jb.GetTransaction(context.Background(), transaction.Id)
-						if err != nil {
-							eventHandler.OnError(err)
-							continue
-						}
-						transaction.Transaction = txData.Transaction
-					}
-					eventHandler.OnMempool(transaction)
-				}
-			}
-		}
-	}()
+	pubChan = make(chan *pubEvent, 100000)
+	go handlePubChan(eventHandler, jb)
 
 	if subs.subscriptions["control"], err = subs.startSubscription(`query:` + subscriptionID + `:control`); err != nil {
 		return nil, err
@@ -308,4 +267,51 @@ func (s *Subscription) startSubscription(subscription string) (*centrifuge.Subsc
 	}
 
 	return sub, nil
+}
+
+func handlePubChan(eventHandler EventHandler, jb *Client) {
+	for e := range pubChan {
+		switch e.Channel {
+		case "control":
+			controlResponse := &models.ControlResponse{}
+			if err := proto.Unmarshal(e.Data, controlResponse); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
+					lastBlock = uint64(controlResponse.Block)
+				}
+				eventHandler.OnStatus(controlResponse)
+			}
+		case "main":
+			transaction := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, transaction); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if len(transaction.Transaction) == 0 {
+					txData, err := jb.GetTransaction(context.Background(), transaction.Id)
+					if err != nil {
+						eventHandler.OnError(err)
+						continue
+					}
+					transaction.Transaction = txData.Transaction
+				}
+				eventHandler.OnTransaction(transaction)
+			}
+		case "mempool":
+			transaction := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, transaction); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if len(transaction.Transaction) == 0 {
+					txData, err := jb.GetTransaction(context.Background(), transaction.Id)
+					if err != nil {
+						eventHandler.OnError(err)
+						continue
+					}
+					transaction.Transaction = txData.Transaction
+				}
+				eventHandler.OnMempool(transaction)
+			}
+		}
+	}
 }
