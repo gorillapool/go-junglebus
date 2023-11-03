@@ -2,7 +2,6 @@ package junglebus
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -21,6 +20,11 @@ type Subscription struct {
 	client           *Client
 	centrifugeClient *centrifuge.Client
 	subscriptions    map[string]*centrifuge.Subscription
+}
+
+type pubEvent struct {
+	Channel string
+	Data    []byte
 }
 
 func (s *Subscription) Unsubscribe() (err error) {
@@ -79,6 +83,8 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		MaxServerPingDelay: 30 * time.Second,
 		EnableCompression:  true,
 	})
+
+	pubChan := make(chan *pubEvent, 100000)
 
 	centrifugeClient.OnConnecting(func(e centrifuge.ConnectingEvent) {
 		if jb.subscription != nil {
@@ -155,25 +161,20 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
-		var transaction *models.TransactionResponse
 		if strings.Contains(e.Channel, ":control") {
-			var control *models.ControlResponse
-			if err = json.Unmarshal(e.Data, &control); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnStatus(control)
+			pubChan <- &pubEvent{
+				Channel: "control",
+				Data:    e.Data,
 			}
 		} else if strings.Contains(e.Channel, ":mempool") {
-			if err = json.Unmarshal(e.Data, &transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnMempool(transaction)
+			pubChan <- &pubEvent{
+				Channel: "mempool",
+				Data:    e.Data,
 			}
 		} else {
-			if err = json.Unmarshal(e.Data, &transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnTransaction(transaction)
+			pubChan <- &pubEvent{
+				Channel: "main",
+				Data:    e.Data,
 			}
 		}
 	})
@@ -203,18 +204,61 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		subscriptions:    map[string]*centrifuge.Subscription{},
 	}
 
+	go func() {
+		for {
+			e := <-pubChan
+			switch e.Channel {
+			case "control":
+				controlResponse := &models.ControlResponse{}
+				if err = proto.Unmarshal(e.Data, controlResponse); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
+						lastBlock = uint64(controlResponse.Block)
+					}
+					eventHandler.OnStatus(controlResponse)
+				}
+			case "main":
+				transaction := &models.TransactionResponse{}
+				if err = proto.Unmarshal(e.Data, transaction); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					if len(transaction.Transaction) == 0 {
+						txData, err := jb.GetTransaction(context.Background(), transaction.Id)
+						if err != nil {
+							eventHandler.OnError(err)
+							continue
+						}
+						transaction.Transaction = txData.Transaction
+					}
+					eventHandler.OnTransaction(transaction)
+				}
+			case "mempool":
+				transaction := &models.TransactionResponse{}
+				if err = proto.Unmarshal(e.Data, transaction); err != nil {
+					eventHandler.OnError(err)
+				} else {
+					if len(transaction.Transaction) == 0 {
+						txData, err := jb.GetTransaction(context.Background(), transaction.Id)
+						if err != nil {
+							eventHandler.OnError(err)
+							continue
+						}
+						transaction.Transaction = txData.Transaction
+					}
+					eventHandler.OnMempool(transaction)
+				}
+			}
+		}
+	}()
+
 	if subs.subscriptions["control"], err = subs.startSubscription(`query:` + subscriptionID + `:control`); err != nil {
 		return nil, err
 	}
 	subs.subscriptions["control"].OnPublication(func(e centrifuge.PublicationEvent) {
-		controlResponse := &models.ControlResponse{}
-		if err = proto.Unmarshal(e.Data, controlResponse); err != nil {
-			eventHandler.OnError(err)
-		} else {
-			if controlResponse.StatusCode == uint32(SubscriptionBlockDone) {
-				lastBlock = uint64(controlResponse.Block)
-			}
-			eventHandler.OnStatus(controlResponse)
+		pubChan <- &pubEvent{
+			Channel: "control",
+			Data:    e.Data,
 		}
 	})
 
@@ -222,12 +266,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
 			return nil, err
 		}
-		transaction := &models.TransactionResponse{}
 		subs.subscriptions["main"].OnPublication(func(e centrifuge.PublicationEvent) {
-			if err = proto.Unmarshal(e.Data, transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnTransaction(transaction)
+			pubChan <- &pubEvent{
+				Channel: "main",
+				Data:    e.Data,
 			}
 		})
 	}
@@ -236,12 +278,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		if subs.subscriptions["mempool"], err = subs.startSubscription(`query:` + subscriptionID + `:mempool`); err != nil {
 			return nil, err
 		}
-		transaction := &models.TransactionResponse{}
 		subs.subscriptions["mempool"].OnPublication(func(e centrifuge.PublicationEvent) {
-			if err = proto.Unmarshal(e.Data, transaction); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				eventHandler.OnMempool(transaction)
+			pubChan <- &pubEvent{
+				Channel: "mempool",
+				Data:    e.Data,
 			}
 		})
 	}
