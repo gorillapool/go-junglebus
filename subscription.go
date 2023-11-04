@@ -28,7 +28,7 @@ type pubEvent struct {
 }
 
 func (s *Subscription) Unsubscribe() (err error) {
-	close <- struct{}{}
+	end <- struct{}{}
 	for _, sub := range s.subscriptions {
 		err = sub.Unsubscribe()
 	}
@@ -38,7 +38,7 @@ func (s *Subscription) Unsubscribe() (err error) {
 }
 
 func (jb *Client) Unsubscribe() (err error) {
-	close <- struct{}{}
+	end <- struct{}{}
 	for _, sub := range jb.subscription.subscriptions {
 		if err = sub.Unsubscribe(); err != nil {
 			return err
@@ -52,7 +52,7 @@ func (jb *Client) Unsubscribe() (err error) {
 }
 
 var currentBlock uint64
-var close = make(chan struct{})
+var end = make(chan struct{})
 
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
 	var subs *Subscription
@@ -318,7 +318,8 @@ func handlePubChan(pubChan chan *pubEvent, eventHandler EventHandler, jb *Client
 					eventHandler.OnMempool(tx)
 				}
 			}
-		case <-close:
+		case <-end:
+			close(pubChan)
 			return
 		}
 	}
