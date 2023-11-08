@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GorillaPool/go-junglebus/models"
@@ -20,6 +21,8 @@ type Subscription struct {
 	client           *Client
 	centrifugeClient *centrifuge.Client
 	subscriptions    map[string]*centrifuge.Subscription
+	pubChan          chan *pubEvent
+	wg               sync.WaitGroup
 }
 
 type pubEvent struct {
@@ -28,7 +31,7 @@ type pubEvent struct {
 }
 
 func (s *Subscription) Unsubscribe() (err error) {
-	end <- struct{}{}
+	close(s.pubChan)
 	for _, sub := range s.subscriptions {
 		err = sub.Unsubscribe()
 	}
@@ -37,26 +40,33 @@ func (s *Subscription) Unsubscribe() (err error) {
 	return err
 }
 
+func (s *Subscription) addToQueue(event *pubEvent) {
+	s.wg.Add(1)
+	s.pubChan <- event
+}
+
 func (jb *Client) Unsubscribe() (err error) {
-	end <- struct{}{}
-	for _, sub := range jb.subscription.subscriptions {
-		if err = sub.Unsubscribe(); err != nil {
-			return err
-		}
-	}
+	jb.subscription.Unsubscribe()
+	// for _, sub := range jb.subscription.subscriptions {
+	// 	if err = sub.Unsubscribe(); err != nil {
+	// 		return err
+	// 	}
+	// }
 
-	jb.subscription.centrifugeClient.Close()
+	// jb.subscription.centrifugeClient.Close()
 	jb.subscription = nil
-
 	return nil
 }
 
-var currentBlock uint64
+// var currentPage uint64
+var currentBlock uint32
+
+var wg sync.WaitGroup
 var end = make(chan struct{})
 
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
 	var subs *Subscription
-	currentBlock = fromBlock
+	currentBlock = uint32(fromBlock)
 
 	var err error
 	token := jb.transport.GetToken()
@@ -93,14 +103,15 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			eventHandler.OnStatus(&models.ControlResponse{
 				StatusCode: uint32(StatusConnecting),
 				Status:     "reconnecting",
-				Message:    "Reconnecting to server at block " + strconv.FormatUint(currentBlock, 10),
+				Message:    fmt.Sprintf("Reconnecting to server at block %d. %d in queue", currentBlock, len(subs.pubChan)),
 			})
 			_ = jb.Unsubscribe()
-			time.Sleep(500 * time.Millisecond)
-			_, err = jb.Subscribe(ctx, subscriptionID, currentBlock, eventHandler)
-			if err != nil {
-				eventHandler.OnError(err)
-			}
+			wg.Wait()
+			log.Panicln("Reconnection")
+			// _, err = jb.Subscribe(ctx, subscriptionID, currentBlock, eventHandler)
+			// if err != nil {
+			// 	eventHandler.OnError(err)
+			// }
 			return
 		}
 
@@ -164,26 +175,25 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			Message:    "Unsubscribed from " + e.Channel,
 		})
 	})
-	pubChan := make(chan *pubEvent, 100000)
-	go handlePubChan(pubChan, eventHandler, jb)
+	go handlePubChan(subs.pubChan, eventHandler, jb)
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
 		if strings.Contains(e.Channel, ":control") {
-			pubChan <- &pubEvent{
+			subs.addToQueue(&pubEvent{
 				Channel: "control",
 				Data:    e.Data,
-			}
+			})
 		} else if strings.Contains(e.Channel, ":mempool") {
-			pubChan <- &pubEvent{
+			subs.addToQueue(&pubEvent{
 				Channel: "mempool",
 				Data:    e.Data,
-			}
+			})
 		} else {
-			pubChan <- &pubEvent{
+			subs.addToQueue(&pubEvent{
 				Channel: "main",
 				Data:    e.Data,
-			}
+			})
 		}
 	})
 
@@ -210,16 +220,17 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		client:           jb,
 		centrifugeClient: centrifugeClient,
 		subscriptions:    map[string]*centrifuge.Subscription{},
+		pubChan:          make(chan *pubEvent, 100000),
 	}
 
 	if subs.subscriptions["control"], err = subs.startSubscription(`query:` + subscriptionID + `:control`); err != nil {
 		return nil, err
 	}
 	subs.subscriptions["control"].OnPublication(func(e centrifuge.PublicationEvent) {
-		pubChan <- &pubEvent{
+		subs.addToQueue(&pubEvent{
 			Channel: "control",
 			Data:    e.Data,
-		}
+		})
 	})
 
 	if eventHandler.OnTransaction != nil {
@@ -227,10 +238,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			return nil, err
 		}
 		subs.subscriptions["main"].OnPublication(func(e centrifuge.PublicationEvent) {
-			pubChan <- &pubEvent{
+			subs.addToQueue(&pubEvent{
 				Channel: "main",
 				Data:    e.Data,
-			}
+			})
 		})
 	}
 
@@ -239,10 +250,10 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			return nil, err
 		}
 		subs.subscriptions["mempool"].OnPublication(func(e centrifuge.PublicationEvent) {
-			pubChan <- &pubEvent{
+			subs.addToQueue(&pubEvent{
 				Channel: "mempool",
 				Data:    e.Data,
-			}
+			})
 		})
 	}
 
@@ -272,55 +283,60 @@ func (s *Subscription) startSubscription(subscription string) (*centrifuge.Subsc
 
 func handlePubChan(pubChan chan *pubEvent, eventHandler EventHandler, jb *Client) {
 	for {
-		select {
-		case e := <-pubChan:
-			switch e.Channel {
-			case "control":
-				status := &models.ControlResponse{}
-				if err := proto.Unmarshal(e.Data, status); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					// log.Printf("[STATUS]: %d: %s", status.StatusCode, status.Message)
-					if status.StatusCode == uint32(SubscriptionBlockDone) {
-						currentBlock = uint64(status.Block) + 1
-					}
-					eventHandler.OnStatus(status)
+		e := <-pubChan
+		// select {
+		// case e := <-pubChan:
+		switch e.Channel {
+		case "control":
+			status := &models.ControlResponse{}
+			if err := proto.Unmarshal(e.Data, status); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if status.StatusCode == uint32(SubscriptionBlockDone) {
+					currentBlock = status.Block + 1
 				}
-			case "main":
-				tx := &models.TransactionResponse{}
-				if err := proto.Unmarshal(e.Data, tx); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					if len(tx.Transaction) == 0 {
-						txData, err := jb.GetTransaction(context.Background(), tx.Id)
-						if err != nil {
-							eventHandler.OnError(err)
-							break
-						}
-						tx.Transaction = txData.Transaction
-					}
-					// log.Printf("[TX]: %d %d - %d: %v", tx.BlockHeight, tx.BlockIndex, len(tx.Transaction), tx.Id)
-					eventHandler.OnTransaction(tx)
-				}
-			case "mempool":
-				tx := &models.TransactionResponse{}
-				if err := proto.Unmarshal(e.Data, tx); err != nil {
-					eventHandler.OnError(err)
-				} else {
-					if len(tx.Transaction) == 0 {
-						txData, err := jb.GetTransaction(context.Background(), tx.Id)
-						if err != nil {
-							eventHandler.OnError(err)
-							break
-						}
-						tx.Transaction = txData.Transaction
-					}
-					eventHandler.OnMempool(tx)
-				}
+				eventHandler.OnStatus(status)
 			}
-		case <-end:
-			close(pubChan)
-			return
+		case "main":
+			tx := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, tx); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if len(tx.Transaction) == 0 {
+					txData, err := jb.GetTransaction(context.Background(), tx.Id)
+					if err != nil {
+						eventHandler.OnError(err)
+						break
+					}
+					tx.Transaction = txData.Transaction
+				}
+				currentBlock = tx.BlockHeight
+				// TODO: update protobuf to include block page
+				// currentPage = tx.BlockPage
+
+				// log.Printf("[TX]: %d %d - %d: %v", tx.BlockHeight, tx.BlockIndex, len(tx.Transaction), tx.Id)
+				eventHandler.OnTransaction(tx)
+			}
+		case "mempool":
+			tx := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, tx); err != nil {
+				eventHandler.OnError(err)
+			} else {
+				if len(tx.Transaction) == 0 {
+					txData, err := jb.GetTransaction(context.Background(), tx.Id)
+					if err != nil {
+						eventHandler.OnError(err)
+						break
+					}
+					tx.Transaction = txData.Transaction
+				}
+				eventHandler.OnMempool(tx)
+			}
 		}
+		wg.Done()
+		// case <-end:
+		// 	close(pubChan)
+		// 	return
+		// }
 	}
 }
