@@ -23,6 +23,7 @@ type Subscription struct {
 	subscriptions    map[string]*centrifuge.Subscription
 	pubChan          chan *pubEvent
 	wg               sync.WaitGroup
+	closed           bool
 }
 
 type pubEvent struct {
@@ -31,12 +32,15 @@ type pubEvent struct {
 }
 
 func (s *Subscription) Unsubscribe() (err error) {
-	close(s.pubChan)
+
 	for _, sub := range s.subscriptions {
 		err = sub.Unsubscribe()
 	}
+	if !s.closed {
+		close(s.pubChan)
+	}
 	s.centrifugeClient.Close()
-
+	s.closed = true
 	return err
 }
 
@@ -45,15 +49,62 @@ func (s *Subscription) addToQueue(event *pubEvent) {
 	s.pubChan <- event
 }
 
+func (s *Subscription) handlePubChan() {
+	for e := range s.pubChan {
+
+		switch e.Channel {
+		case "control":
+			status := &models.ControlResponse{}
+			if err := proto.Unmarshal(e.Data, status); err != nil {
+				s.EventHandler.OnError(err)
+			} else {
+				if status.StatusCode == uint32(SubscriptionBlockDone) {
+					currentBlock = status.Block + 1
+				}
+				s.EventHandler.OnStatus(status)
+			}
+		case "main":
+			tx := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, tx); err != nil {
+				s.EventHandler.OnError(err)
+			} else {
+				if len(tx.Transaction) == 0 {
+					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
+					if err != nil {
+						s.EventHandler.OnError(err)
+						break
+					}
+					tx.Transaction = txData.Transaction
+				}
+				currentBlock = tx.BlockHeight
+				// TODO: update protobuf to include block page
+				// currentPage = tx.BlockPage
+
+				// log.Printf("[TX]: %d %d - %d: %v", tx.BlockHeight, tx.BlockIndex, len(tx.Transaction), tx.Id)
+				s.EventHandler.OnTransaction(tx)
+			}
+		case "mempool":
+			tx := &models.TransactionResponse{}
+			if err := proto.Unmarshal(e.Data, tx); err != nil {
+				s.EventHandler.OnError(err)
+			} else {
+				if len(tx.Transaction) == 0 {
+					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
+					if err != nil {
+						s.EventHandler.OnError(err)
+						break
+					}
+					tx.Transaction = txData.Transaction
+				}
+				s.EventHandler.OnMempool(tx)
+			}
+		}
+		s.wg.Done()
+	}
+}
+
 func (jb *Client) Unsubscribe() (err error) {
 	jb.subscription.Unsubscribe()
-	// for _, sub := range jb.subscription.subscriptions {
-	// 	if err = sub.Unsubscribe(); err != nil {
-	// 		return err
-	// 	}
-	// }
-
-	// jb.subscription.centrifugeClient.Close()
 	jb.subscription = nil
 	return nil
 }
@@ -61,7 +112,6 @@ func (jb *Client) Unsubscribe() (err error) {
 // var currentPage uint64
 var currentBlock uint32
 
-var wg sync.WaitGroup
 var end = make(chan struct{})
 
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
@@ -106,12 +156,11 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 				Message:    fmt.Sprintf("Reconnecting to server at block %d. %d in queue", currentBlock, len(subs.pubChan)),
 			})
 			_ = jb.Unsubscribe()
-			wg.Wait()
-			log.Panicln("Reconnection")
-			// _, err = jb.Subscribe(ctx, subscriptionID, currentBlock, eventHandler)
-			// if err != nil {
-			// 	eventHandler.OnError(err)
-			// }
+			subs.wg.Wait()
+			_, err = jb.Subscribe(ctx, subscriptionID, uint64(currentBlock), eventHandler)
+			if err != nil {
+				eventHandler.OnError(err)
+			}
 			return
 		}
 
@@ -175,7 +224,16 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			Message:    "Unsubscribed from " + e.Channel,
 		})
 	})
-	go handlePubChan(subs.pubChan, eventHandler, jb)
+	subs = &Subscription{
+		SubscriptionID:   subscriptionID,
+		FromBlock:        fromBlock,
+		EventHandler:     eventHandler,
+		client:           jb,
+		centrifugeClient: centrifugeClient,
+		subscriptions:    map[string]*centrifuge.Subscription{},
+		pubChan:          make(chan *pubEvent, 100000),
+	}
+	go subs.handlePubChan()
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
@@ -212,16 +270,6 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 			Message:    "Left " + e.Channel,
 		})
 	})
-
-	subs = &Subscription{
-		SubscriptionID:   subscriptionID,
-		FromBlock:        fromBlock,
-		EventHandler:     eventHandler,
-		client:           jb,
-		centrifugeClient: centrifugeClient,
-		subscriptions:    map[string]*centrifuge.Subscription{},
-		pubChan:          make(chan *pubEvent, 100000),
-	}
 
 	if subs.subscriptions["control"], err = subs.startSubscription(`query:` + subscriptionID + `:control`); err != nil {
 		return nil, err
@@ -279,64 +327,4 @@ func (s *Subscription) startSubscription(subscription string) (*centrifuge.Subsc
 	}
 
 	return sub, nil
-}
-
-func handlePubChan(pubChan chan *pubEvent, eventHandler EventHandler, jb *Client) {
-	for {
-		e := <-pubChan
-		// select {
-		// case e := <-pubChan:
-		switch e.Channel {
-		case "control":
-			status := &models.ControlResponse{}
-			if err := proto.Unmarshal(e.Data, status); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				if status.StatusCode == uint32(SubscriptionBlockDone) {
-					currentBlock = status.Block + 1
-				}
-				eventHandler.OnStatus(status)
-			}
-		case "main":
-			tx := &models.TransactionResponse{}
-			if err := proto.Unmarshal(e.Data, tx); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				if len(tx.Transaction) == 0 {
-					txData, err := jb.GetTransaction(context.Background(), tx.Id)
-					if err != nil {
-						eventHandler.OnError(err)
-						break
-					}
-					tx.Transaction = txData.Transaction
-				}
-				currentBlock = tx.BlockHeight
-				// TODO: update protobuf to include block page
-				// currentPage = tx.BlockPage
-
-				// log.Printf("[TX]: %d %d - %d: %v", tx.BlockHeight, tx.BlockIndex, len(tx.Transaction), tx.Id)
-				eventHandler.OnTransaction(tx)
-			}
-		case "mempool":
-			tx := &models.TransactionResponse{}
-			if err := proto.Unmarshal(e.Data, tx); err != nil {
-				eventHandler.OnError(err)
-			} else {
-				if len(tx.Transaction) == 0 {
-					txData, err := jb.GetTransaction(context.Background(), tx.Id)
-					if err != nil {
-						eventHandler.OnError(err)
-						break
-					}
-					tx.Transaction = txData.Transaction
-				}
-				eventHandler.OnMempool(tx)
-			}
-		}
-		wg.Done()
-		// case <-end:
-		// 	close(pubChan)
-		// 	return
-		// }
-	}
 }
