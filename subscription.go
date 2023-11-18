@@ -155,8 +155,12 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 				Status:     "reconnecting",
 				Message:    fmt.Sprintf("Reconnecting to server at block %d. %d in queue", currentBlock, len(subs.pubChan)),
 			})
-			_ = jb.Unsubscribe()
+			for _, sub := range subs.subscriptions {
+				sub.Unsubscribe()
+			}
 			subs.wg.Wait()
+			_ = jb.Unsubscribe()
+			time.Sleep(10 * time.Second)
 			_, err = jb.Subscribe(ctx, subscriptionID, uint64(currentBlock), eventHandler)
 			if err != nil {
 				eventHandler.OnError(err)
