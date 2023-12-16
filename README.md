@@ -59,12 +59,11 @@ func main() {
     var subscription *junglebus.Subscription
     if subscription, err = junglebusClient.Subscribe(context.Background(), subscriptionID, fromBlock, eventHandler); err != nil {
         log.Printf("ERROR: failed getting subscription %s", err.Error())
-    } else {
-        time.Sleep(10 * time.Second) // stop after 10 seconds
-        if err = subscription.Unsubscribe(); err != nil {
-            log.Printf("ERROR: failed unsubscribing %s", err.Error())
-        }
     }
+
+    var wg sync.WaitGroup
+	wg.Add(1)
+	wg.Wait()
 }
 ```
 
