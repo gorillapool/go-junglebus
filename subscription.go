@@ -112,9 +112,11 @@ func (jb *Client) Unsubscribe() (err error) {
 // var currentPage uint64
 var currentBlock uint32
 
-var end = make(chan struct{})
-
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
+	return jb.SubscribeWithQueue(ctx, subscriptionID, fromBlock, eventHandler, 100000)
+}
+
+func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler, queueSize uint32) (*Subscription, error) {
 	var subs *Subscription
 	currentBlock = uint32(fromBlock)
 
@@ -235,7 +237,7 @@ func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBloc
 		client:           jb,
 		centrifugeClient: centrifugeClient,
 		subscriptions:    map[string]*centrifuge.Subscription{},
-		pubChan:          make(chan *pubEvent, 100000),
+		pubChan:          make(chan *pubEvent, queueSize),
 	}
 	go subs.handlePubChan()
 
