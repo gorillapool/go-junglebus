@@ -33,6 +33,8 @@ var (
 	SubscriptionWait StatusCode = 100
 	// SubscriptionError is sent when an error was encountered
 	SubscriptionError StatusCode = 101
+	// SubscriptionPageDone is sent when a block-page is done processing
+	SubscriptionPageDone StatusCode = 199
 	// SubscriptionBlockDone is sent when a block is done processing
 	SubscriptionBlockDone StatusCode = 200
 	// SubscriptionReorg is sent when a reorg is initialized
