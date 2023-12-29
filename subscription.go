@@ -51,7 +51,6 @@ func (s *Subscription) addToQueue(event *pubEvent) {
 
 func (s *Subscription) handlePubChan() {
 	for e := range s.pubChan {
-
 		switch e.Channel {
 		case "control":
 			status := &models.ControlResponse{}
@@ -60,6 +59,11 @@ func (s *Subscription) handlePubChan() {
 			} else {
 				if status.StatusCode == uint32(SubscriptionBlockDone) {
 					currentBlock = status.Block + 1
+					currentPage = 0
+				}
+				if status.StatusCode == uint32(SubscriptionPageDone) {
+					currentBlock = status.Block
+					currentPage = status.Transactions + 1
 				}
 				s.EventHandler.OnStatus(status)
 			}
@@ -111,14 +115,16 @@ func (jb *Client) Unsubscribe() (err error) {
 
 // var currentPage uint64
 var currentBlock uint32
+var currentPage uint64
 
 func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
-	return jb.SubscribeWithQueue(ctx, subscriptionID, fromBlock, eventHandler, 100000)
+	return jb.SubscribeWithQueue(ctx, subscriptionID, fromBlock, 0, eventHandler, 100000)
 }
 
-func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler, queueSize uint32) (*Subscription, error) {
+func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string, fromBlock uint64, fromPage uint64, eventHandler EventHandler, queueSize uint32) (*Subscription, error) {
 	var subs *Subscription
 	currentBlock = uint32(fromBlock)
+	currentPage = fromPage
 
 	var err error
 	token := jb.transport.GetToken()
@@ -152,18 +158,18 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 
 	centrifugeClient.OnConnecting(func(e centrifuge.ConnectingEvent) {
 		if jb.subscription != nil {
-			eventHandler.OnStatus(&models.ControlResponse{
-				StatusCode: uint32(StatusConnecting),
-				Status:     "reconnecting",
-				Message:    fmt.Sprintf("Reconnecting to server at block %d. %d in queue", currentBlock, len(subs.pubChan)),
-			})
 			for _, sub := range subs.subscriptions {
 				sub.Unsubscribe()
 			}
 			subs.wg.Wait()
+			eventHandler.OnStatus(&models.ControlResponse{
+				StatusCode: uint32(StatusConnecting),
+				Status:     "reconnecting",
+				Message:    fmt.Sprintf("Reconnecting to server at block %d, page %d", currentBlock, currentPage),
+			})
 			_ = jb.Unsubscribe()
 			time.Sleep(10 * time.Second)
-			_, err = jb.Subscribe(ctx, subscriptionID, uint64(currentBlock), eventHandler)
+			_, err = jb.SubscribeWithQueue(ctx, subscriptionID, uint64(currentBlock), currentPage, eventHandler, queueSize)
 			if err != nil {
 				eventHandler.OnError(err)
 			}
@@ -288,7 +294,8 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 	})
 
 	if eventHandler.OnTransaction != nil {
-		if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
+		if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10) + `:` + strconv.FormatUint(currentPage, 10)); err != nil {
+			// if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
 			return nil, err
 		}
 		subs.subscriptions["main"].OnPublication(func(e centrifuge.PublicationEvent) {
