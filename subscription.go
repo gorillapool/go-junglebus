@@ -49,7 +49,7 @@ func (s *Subscription) addToQueue(event *pubEvent) {
 	s.pubChan <- event
 }
 
-func (s *Subscription) handlePubChan() {
+func (s *Subscription) handlePubChan(options *SubscribeOptions) {
 	for e := range s.pubChan {
 		switch e.Channel {
 		case "control":
@@ -72,7 +72,7 @@ func (s *Subscription) handlePubChan() {
 			if err := proto.Unmarshal(e.Data, tx); err != nil {
 				s.EventHandler.OnError(err)
 			} else {
-				if len(tx.Transaction) == 0 {
+				if len(tx.Transaction) == 0 && !options.LiteMode {
 					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
 					if err != nil {
 						s.EventHandler.OnError(err)
@@ -92,7 +92,7 @@ func (s *Subscription) handlePubChan() {
 			if err := proto.Unmarshal(e.Data, tx); err != nil {
 				s.EventHandler.OnError(err)
 			} else {
-				if len(tx.Transaction) == 0 {
+				if len(tx.Transaction) == 0 && !options.LiteMode {
 					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
 					if err != nil {
 						s.EventHandler.OnError(err)
@@ -117,11 +117,18 @@ func (jb *Client) Unsubscribe() (err error) {
 var currentBlock uint32
 var currentPage uint64
 
-func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
-	return jb.SubscribeWithQueue(ctx, subscriptionID, fromBlock, 0, eventHandler, 100000)
+type SubscribeOptions struct {
+	QueueSize uint32
+	LiteMode  bool
 }
 
-func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string, fromBlock uint64, fromPage uint64, eventHandler EventHandler, queueSize uint32) (*Subscription, error) {
+func (jb *Client) Subscribe(ctx context.Context, subscriptionID string, fromBlock uint64, eventHandler EventHandler) (*Subscription, error) {
+	return jb.SubscribeWithQueue(ctx, subscriptionID, fromBlock, 0, eventHandler, &SubscribeOptions{
+		QueueSize: 100000,
+	})
+}
+
+func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string, fromBlock uint64, fromPage uint64, eventHandler EventHandler, options *SubscribeOptions) (*Subscription, error) {
 	var subs *Subscription
 	currentBlock = uint32(fromBlock)
 	currentPage = fromPage
@@ -169,7 +176,7 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 			})
 			_ = jb.Unsubscribe()
 			time.Sleep(1 * time.Second)
-			_, err = jb.SubscribeWithQueue(ctx, subscriptionID, uint64(currentBlock), currentPage, eventHandler, queueSize)
+			_, err = jb.SubscribeWithQueue(ctx, subscriptionID, uint64(currentBlock), currentPage, eventHandler, options)
 			if err != nil {
 				eventHandler.OnError(err)
 			}
@@ -243,9 +250,9 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 		client:           jb,
 		centrifugeClient: centrifugeClient,
 		subscriptions:    map[string]*centrifuge.Subscription{},
-		pubChan:          make(chan *pubEvent, queueSize),
+		pubChan:          make(chan *pubEvent, options.QueueSize),
 	}
-	go subs.handlePubChan()
+	go subs.handlePubChan(options)
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
@@ -293,8 +300,12 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 		})
 	})
 
+	subType := "query"
+	if options.LiteMode {
+		subType = "lite"
+	}
 	if eventHandler.OnTransaction != nil {
-		if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10) + `:` + strconv.FormatUint(currentPage, 10)); err != nil {
+		if subs.subscriptions["main"], err = subs.startSubscription(subType + `:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10) + `:` + strconv.FormatUint(currentPage, 10)); err != nil {
 			// if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
 			return nil, err
 		}
@@ -307,7 +318,7 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 	}
 
 	if eventHandler.OnMempool != nil {
-		if subs.subscriptions["mempool"], err = subs.startSubscription(`query:` + subscriptionID + `:mempool`); err != nil {
+		if subs.subscriptions["mempool"], err = subs.startSubscription(subType + `:` + subscriptionID + `:mempool`); err != nil {
 			return nil, err
 		}
 		subs.subscriptions["mempool"].OnPublication(func(e centrifuge.PublicationEvent) {
