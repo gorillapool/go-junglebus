@@ -49,7 +49,7 @@ func (s *Subscription) addToQueue(event *pubEvent) {
 	s.pubChan <- event
 }
 
-func (s *Subscription) handlePubChan() {
+func (s *Subscription) handlePubChan(options *SubscribeOptions) {
 	for e := range s.pubChan {
 		switch e.Channel {
 		case "control":
@@ -72,7 +72,7 @@ func (s *Subscription) handlePubChan() {
 			if err := proto.Unmarshal(e.Data, tx); err != nil {
 				s.EventHandler.OnError(err)
 			} else {
-				if len(tx.Transaction) == 0 {
+				if len(tx.Transaction) == 0 && !options.LiteMode {
 					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
 					if err != nil {
 						s.EventHandler.OnError(err)
@@ -92,7 +92,7 @@ func (s *Subscription) handlePubChan() {
 			if err := proto.Unmarshal(e.Data, tx); err != nil {
 				s.EventHandler.OnError(err)
 			} else {
-				if len(tx.Transaction) == 0 {
+				if len(tx.Transaction) == 0 && !options.LiteMode {
 					txData, err := s.client.GetTransaction(context.Background(), tx.Id)
 					if err != nil {
 						s.EventHandler.OnError(err)
@@ -252,7 +252,7 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 		subscriptions:    map[string]*centrifuge.Subscription{},
 		pubChan:          make(chan *pubEvent, options.QueueSize),
 	}
-	go subs.handlePubChan()
+	go subs.handlePubChan(options)
 
 	centrifugeClient.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
