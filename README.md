@@ -28,6 +28,9 @@ import (
     "github.com/GorillaPool/go-junglebus/models"
 )
 
+wg := &sync.WaitGroup{}
+
+
 func main() {
     junglebusClient, err := junglebus.New(
         junglebus.WithHTTP("https://junglebus.gorillapool.io"),
@@ -59,25 +62,45 @@ func main() {
     var subscription *junglebus.Subscription
     if subscription, err = junglebusClient.Subscribe(context.Background(), subscriptionID, fromBlock, eventHandler); err != nil {
         log.Printf("ERROR: failed getting subscription %s", err.Error())
-    } else {
-        time.Sleep(10 * time.Second) // stop after 10 seconds
-        if err = subscription.Unsubscribe(); err != nil {
-            log.Printf("ERROR: failed unsubscribing %s", err.Error())
-        }
     }
+    wg.Add(1)
+	  wg.Wait()
 }
 ```
 
+## Subscribe with Lite mode
+Lite mode is a feature that allows you to receive only the transaction hashes and block heights. This is useful when you only need to know when a transaction is mined and do not need the full transaction details. This can save a lot of bandwidth and processing time for some use cases. You can also use this to design "lazy" indexers that look up the details as they are requested instead of indexing everything by default.
+
+```go
+	var subscription *junglebus.Subscription
+	if subscription, err := junglebusClient.SubscribeWithQueue(context.Background(), subscriptionID, fromBlock, 0, eventHandler, &junglebus.SubscribeOptions{
+		QueueSize: 100000,
+		LiteMode:  true,
+	}); err != nil {
+		log.Printf("ERROR: failed getting subscription %s", err.Error())
+	}
+	wg.Add(1)
+	wg.Wait()
+```
+
 ## Table of Contents
-- [What is JungleBus?](#what-is-junglebus)
-- [Installation](#installation)
-- [Documentation](#documentation)
-- [Examples & Tests](#examples--tests)
-- [Benchmarks](#benchmarks)
-- [Code Standards](#code-standards)
-- [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
+- [JungleBus: Go Client](#junglebus-go-client)
+  - [Subscribe with Lite mode](#subscribe-with-lite-mode)
+  - [Table of Contents](#table-of-contents)
+  - [What is JungleBus?](#what-is-junglebus)
+  - [Installation](#installation)
+  - [Documentation](#documentation)
+      - [Built-in Features](#built-in-features)
+    - [Automatic Releases on Tag Creation (recommended)](#automatic-releases-on-tag-creation-recommended)
+    - [Manual Releases (optional)](#manual-releases-optional)
+  - [Examples \& Tests](#examples--tests)
+  - [Benchmarks](#benchmarks)
+  - [Code Standards](#code-standards)
+  - [Usage](#usage)
+  - [Contributing](#contributing)
+    - [How can I help?](#how-can-i-help)
+    - [Contributors ✨](#contributors-)
+  - [License](#license)
 
 <br/>
 
