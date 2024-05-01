@@ -21,6 +21,11 @@ type BlockHeaderService interface {
 // TransactionService is the transaction related requests
 type TransactionService interface {
 	GetTransaction(ctx context.Context, txID string) (*models.Transaction, error)
+	GetRawTransaction(ctx context.Context, txID string) ([]byte, error)
+}
+
+type AuthService interface {
+	GetUser(ctx context.Context) (*models.User, error)
 }
 
 // TransportService the transport service interface
@@ -39,6 +44,7 @@ type TransportService interface {
 	UseSSL(useSSL bool)
 	IsSSL() bool
 	GetServerURL() string
+	GetUser(ctx context.Context) (*models.User, error)
 }
 
 // LoginResponse response from server on login or token refresh

@@ -107,7 +107,7 @@ func (h *TransportHTTP) Login(ctx context.Context, username string, password str
 
 	var loginResponse map[string]interface{}
 	if err = h.doHTTPRequest(
-		ctx, http.MethodGet, `/user/login`, jsonStr, &loginResponse,
+		ctx, http.MethodPost, `/user/login`, jsonStr, &loginResponse,
 	); err != nil {
 		return err
 	}
@@ -136,6 +136,21 @@ func (h *TransportHTTP) GetTransaction(ctx context.Context, txID string) (transa
 	}
 
 	return transaction, nil
+}
+
+// GetTransaction will get a transaction by ID
+func (h *TransportHTTP) GetRawTransaction(ctx context.Context, txID string) (rawtx []byte, err error) {
+
+	if err = h.doHTTPRequest(
+		ctx, http.MethodGet, "/transaction/get/"+txID+"/bin", nil, &rawtx,
+	); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Transaction: %x\n", rawtx)
+	}
+
+	return rawtx, nil
 }
 
 // GetAddressTransactions will get the metadata of all transaction related to the given address
@@ -197,6 +212,23 @@ func (h *TransportHTTP) GetBlockHeaders(ctx context.Context, fromBlock string, l
 	}
 
 	return blockHeaders, nil
+}
+
+func (h *TransportHTTP) GetUser(ctx context.Context) (*models.User, error) {
+	// token := h.GetToken()
+	// log.Println(token)
+	user := &models.User{}
+	if err := h.doHTTPRequest(
+		ctx, http.MethodGet, "/user/get", nil, user,
+	); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("user: %v\n", user)
+	}
+
+	// return blockHeaders, nil
+	return user, nil
 }
 
 // doHTTPRequest will create and submit the HTTP request
