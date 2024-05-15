@@ -15,3 +15,7 @@ func (jb *Client) GetBlockHeader(ctx context.Context, block string) (*models.Blo
 func (jb *Client) GetBlockHeaders(ctx context.Context, block string, limit uint) ([]*models.BlockHeader, error) {
 	return jb.transport.GetBlockHeaders(ctx, block, limit)
 }
+
+func (jb *Client) GetChaintip(ctx context.Context) (*models.BlockHeader, error) {
+	return jb.transport.GetChaintip(ctx)
+}

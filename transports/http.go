@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -64,7 +65,7 @@ func (h *TransportHTTP) GetSubscriptionToken(ctx context.Context, subscriptionID
 	}
 
 	var response LoginResponse
-	if err = h.doHTTPRequest(
+	if err = h.doHTTPJsonRequest(
 		ctx, http.MethodPost, `/user/subscription-token`, jsonStr, &response,
 	); err != nil {
 		return "", err
@@ -76,7 +77,7 @@ func (h *TransportHTTP) GetSubscriptionToken(ctx context.Context, subscriptionID
 // RefreshToken gets a new  token to use for all requests
 func (h *TransportHTTP) RefreshToken(ctx context.Context) (string, error) {
 	var response LoginResponse
-	if err := h.doHTTPRequest(
+	if err := h.doHTTPJsonRequest(
 		ctx, http.MethodGet, `/user/refresh-token`, nil, &response,
 	); err != nil {
 		return "", err
@@ -106,7 +107,7 @@ func (h *TransportHTTP) Login(ctx context.Context, username string, password str
 	}
 
 	var loginResponse map[string]interface{}
-	if err = h.doHTTPRequest(
+	if err = h.doHTTPJsonRequest(
 		ctx, http.MethodPost, `/user/login`, jsonStr, &loginResponse,
 	); err != nil {
 		return err
@@ -126,7 +127,7 @@ func (h *TransportHTTP) Login(ctx context.Context, username string, password str
 // GetTransaction will get a transaction by ID
 func (h *TransportHTTP) GetTransaction(ctx context.Context, txID string) (transaction *models.Transaction, err error) {
 
-	if err = h.doHTTPRequest(
+	if err = h.doHTTPJsonRequest(
 		ctx, http.MethodGet, "/transaction/get/"+txID, nil, &transaction,
 	); err != nil {
 		return nil, err
@@ -141,9 +142,7 @@ func (h *TransportHTTP) GetTransaction(ctx context.Context, txID string) (transa
 // GetTransaction will get a transaction by ID
 func (h *TransportHTTP) GetRawTransaction(ctx context.Context, txID string) (rawtx []byte, err error) {
 
-	if err = h.doHTTPRequest(
-		ctx, http.MethodGet, "/transaction/get/"+txID+"/bin", nil, &rawtx,
-	); err != nil {
+	if rawtx, err = h.doHTTPGetRequest(ctx, "/transaction/get/"+txID+"/bin"); err != nil {
 		return nil, err
 	}
 	if h.debug {
@@ -153,10 +152,46 @@ func (h *TransportHTTP) GetRawTransaction(ctx context.Context, txID string) (raw
 	return rawtx, nil
 }
 
+func (h *TransportHTTP) GetFromBlock(ctx context.Context, subscriptionID string, height uint32, idx uint64) (transactions []*models.Transaction, err error) {
+	url := fmt.Sprintf(
+		"/transaction/from-block?subscription_id=%s&block_height=%d&last_idx=%d",
+		subscriptionID, height, idx,
+	)
+	if err = h.doHTTPJsonRequest(
+		ctx, http.MethodGet, url, nil, &transactions,
+	); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Transactions: %v\n", transactions)
+	}
+
+	return transactions, nil
+}
+
+func (h *TransportHTTP) GetLiteFromBlock(ctx context.Context, subscriptionID string, height uint32, idx uint64) (transactions []*models.TransactionResponse, err error) {
+	url := fmt.Sprintf(
+		"/transaction/from-block-lite?subscription_id=%s&block_height=%d&last_idx=%d",
+		subscriptionID,
+		height,
+		idx,
+	)
+	if err = h.doHTTPJsonRequest(
+		ctx, http.MethodGet, url, nil, &transactions,
+	); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Transactions: %v\n", transactions)
+	}
+
+	return transactions, nil
+}
+
 // GetAddressTransactions will get the metadata of all transaction related to the given address
-func (h *TransportHTTP) GetAddressTransactions(ctx context.Context, address string) (addr []*models.Address, err error) {
-	if err = h.doHTTPRequest(
-		ctx, http.MethodGet, "/address/get/"+address, nil, &addr,
+func (h *TransportHTTP) GetAddressTransactions(ctx context.Context, address string, fromHeight uint32) (addr []*models.AddressTx, err error) {
+	if err = h.doHTTPJsonRequest(
+		ctx, http.MethodGet, fmt.Sprintf("/address/get/%s/%d", address, fromHeight), nil, &addr,
 	); err != nil {
 		return nil, err
 	}
@@ -168,10 +203,10 @@ func (h *TransportHTTP) GetAddressTransactions(ctx context.Context, address stri
 }
 
 // GetAddressTransactionDetails will get all transactions related to the given address
-func (h *TransportHTTP) GetAddressTransactionDetails(ctx context.Context, address string) (transactions []*models.Transaction, err error) {
+func (h *TransportHTTP) GetAddressTransactionDetails(ctx context.Context, address string, fromHeight uint32) (transactions []*models.Transaction, err error) {
 
-	if err = h.doHTTPRequest(
-		ctx, http.MethodGet, "/address/transactions/"+address, nil, &transactions,
+	if err = h.doHTTPJsonRequest(
+		ctx, http.MethodGet, fmt.Sprintf("/address/transactions/%s/%d", address, fromHeight), nil, &transactions,
 	); err != nil {
 		return nil, err
 	}
@@ -185,14 +220,13 @@ func (h *TransportHTTP) GetAddressTransactionDetails(ctx context.Context, addres
 // GetBlockHeader will get the given block header details
 // Can pass either the block hash or the block height (as a string)
 func (h *TransportHTTP) GetBlockHeader(ctx context.Context, block string) (blockHeader *models.BlockHeader, err error) {
-
-	if err = h.doHTTPRequest(
+	if err = h.doHTTPJsonRequest(
 		ctx, http.MethodGet, "/block_header/get/"+block, nil, &blockHeader,
 	); err != nil {
 		return nil, err
 	}
 	if h.debug {
-		log.Printf("transactions: %v\n", blockHeader)
+		log.Printf("block header: %v\n", blockHeader)
 	}
 
 	return blockHeader, nil
@@ -201,24 +235,34 @@ func (h *TransportHTTP) GetBlockHeader(ctx context.Context, block string) (block
 // GetBlockHeaders will get all block headers from the given block, limited by limit
 // Can pass either the block hash or the block height (as a string)
 func (h *TransportHTTP) GetBlockHeaders(ctx context.Context, fromBlock string, limit uint) (blockHeaders []*models.BlockHeader, err error) {
-
-	if err = h.doHTTPRequest(
+	if err = h.doHTTPJsonRequest(
 		ctx, http.MethodGet, fmt.Sprintf("/block_header/list/%s?limit=%d", fromBlock, limit), nil, &blockHeaders,
 	); err != nil {
 		return nil, err
 	}
 	if h.debug {
-		log.Printf("transactions: %v\n", blockHeaders)
+		log.Printf("block headers: %v\n", blockHeaders)
 	}
 
 	return blockHeaders, nil
 }
 
+func (h *TransportHTTP) GetChaintip(ctx context.Context) (blockHeader *models.BlockHeader, err error) {
+	if err = h.doHTTPJsonRequest(
+		ctx, http.MethodGet, "/block_header/tip", nil, &blockHeader,
+	); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Chaintip: %v\n", blockHeader)
+	}
+
+	return blockHeader, nil
+}
+
 func (h *TransportHTTP) GetUser(ctx context.Context) (*models.User, error) {
-	// token := h.GetToken()
-	// log.Println(token)
 	user := &models.User{}
-	if err := h.doHTTPRequest(
+	if err := h.doHTTPJsonRequest(
 		ctx, http.MethodGet, "/user/get", nil, user,
 	); err != nil {
 		return nil, err
@@ -227,12 +271,33 @@ func (h *TransportHTTP) GetUser(ctx context.Context) (*models.User, error) {
 		log.Printf("user: %v\n", user)
 	}
 
-	// return blockHeaders, nil
 	return user, nil
 }
 
-// doHTTPRequest will create and submit the HTTP request
-func (h *TransportHTTP) doHTTPRequest(ctx context.Context, method string, path string, rawJSON []byte, responseJSON interface{}) error {
+func (h *TransportHTTP) GetTxo(ctx context.Context, txID string, vout uint32) (txo []byte, err error) {
+	if txo, err = h.doHTTPGetRequest(ctx, fmt.Sprintf("/txo/get/%s_%d", txID, vout)); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Txo: %x\n", txo)
+	}
+
+	return txo, nil
+}
+
+func (h *TransportHTTP) GetSpend(ctx context.Context, txID string, vout uint32) (spend []byte, err error) {
+	if spend, err = h.doHTTPGetRequest(ctx, fmt.Sprintf("/txo/spend/%s_%d", txID, vout)); err != nil {
+		return nil, err
+	}
+	if h.debug {
+		log.Printf("Spend: %x\n", spend)
+	}
+
+	return spend, nil
+}
+
+// doHTTPJsonRequest will create and submit the HTTP request
+func (h *TransportHTTP) doHTTPJsonRequest(ctx context.Context, method string, path string, rawJSON []byte, responseJSON interface{}) error {
 
 	protocol := "https"
 	if !h.useSSL {
@@ -260,4 +325,37 @@ func (h *TransportHTTP) doHTTPRequest(ctx context.Context, method string, path s
 	}
 
 	return json.NewDecoder(resp.Body).Decode(&responseJSON)
+}
+
+// doHTTPRequest will create and submit the HTTP request
+func (h *TransportHTTP) doHTTPGetRequest(ctx context.Context, path string) (body []byte, err error) {
+
+	protocol := "https"
+	if !h.useSSL {
+		protocol = "http"
+	}
+	serverRequest := fmt.Sprintf("%s://%s/%s%s", protocol, h.server, h.version, path)
+	req, err := http.NewRequestWithContext(ctx, "GET", serverRequest, bytes.NewBuffer([]byte{}))
+	if err != nil {
+		return
+	}
+	req.Header.Set("token", h.token)
+
+	var resp *http.Response
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	if resp, err = h.httpClient.Do(req); err != nil {
+		return
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		// log.Println("Payment Required: ", resp.Header.Get("jb-fund-address"))
+	} else if resp.StatusCode >= http.StatusBadRequest {
+		err = errors.New("server error: " + strconv.Itoa(resp.StatusCode) + " - " + resp.Status)
+		return
+	}
+
+	return io.ReadAll(resp.Body)
 }

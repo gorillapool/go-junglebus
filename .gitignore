@@ -32,3 +32,5 @@ dist
 
 # Code coverage
 coverage.txt
+
+vendor

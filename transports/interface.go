@@ -8,24 +8,31 @@ import (
 
 // AddressService is the address related requests
 type AddressService interface {
-	GetAddressTransactions(ctx context.Context, address string) ([]*models.Address, error)
-	GetAddressTransactionDetails(ctx context.Context, address string) ([]*models.Transaction, error)
+	GetAddressTransactions(ctx context.Context, address string, fromHeight uint32) ([]*models.AddressTx, error)
+	GetAddressTransactionDetails(ctx context.Context, address string, fromHeight uint32) ([]*models.Transaction, error)
 }
 
 // BlockHeaderService is the block header related requests
 type BlockHeaderService interface {
 	GetBlockHeader(ctx context.Context, block string) (*models.BlockHeader, error)
 	GetBlockHeaders(ctx context.Context, fromBlock string, limit uint) ([]*models.BlockHeader, error)
+	GetChaintip(ctx context.Context) (*models.BlockHeader, error)
 }
 
 // TransactionService is the transaction related requests
 type TransactionService interface {
 	GetTransaction(ctx context.Context, txID string) (*models.Transaction, error)
 	GetRawTransaction(ctx context.Context, txID string) ([]byte, error)
+	GetFromBlock(ctx context.Context, height string, lastIdx uint64) ([]*models.Transaction, error)
 }
 
 type AuthService interface {
 	GetUser(ctx context.Context) (*models.User, error)
+}
+
+type TxoService interface {
+	GetTxo(ctx context.Context, txID string, vout uint32) ([]byte, error)
+	GetSpend(ctx context.Context, txID string, vout uint32) ([]byte, error)
 }
 
 // TransportService the transport service interface
@@ -33,6 +40,7 @@ type TransportService interface {
 	AddressService
 	BlockHeaderService
 	TransactionService
+	TxoService
 	Login(ctx context.Context, username string, password string) error
 	IsDebug() bool
 	SetDebug(debug bool)
