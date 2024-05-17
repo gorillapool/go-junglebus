@@ -23,7 +23,8 @@ type BlockHeaderService interface {
 type TransactionService interface {
 	GetTransaction(ctx context.Context, txID string) (*models.Transaction, error)
 	GetRawTransaction(ctx context.Context, txID string) ([]byte, error)
-	GetFromBlock(ctx context.Context, height string, lastIdx uint64) ([]*models.Transaction, error)
+	GetFromBlock(ctx context.Context, subscriptionID string, height uint32, lastIdx uint64) ([]*models.Transaction, error)
+	GetLiteFromBlock(ctx context.Context, subscriptionID string, height uint32, lastIdx uint64) ([]*models.TransactionResponse, error)
 }
 
 type AuthService interface {
