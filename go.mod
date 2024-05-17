@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/centrifugal/centrifuge-go v0.10.2
+	github.com/mdp/qrterminal/v3 v3.2.0
 	github.com/stretchr/testify v1.8.2
 	google.golang.org/protobuf v1.30.0
 )
@@ -21,7 +22,9 @@ require (
 	github.com/segmentio/asm v1.2.0 // indirect
 	github.com/segmentio/encoding v0.3.6 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261 // indirect
+	golang.org/x/sys v0.14.0 // indirect
+	golang.org/x/term v0.13.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20200902074654-038fdea0a05b // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )
