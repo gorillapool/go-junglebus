@@ -12,7 +12,6 @@ import (
 	"strconv"
 
 	"github.com/GorillaPool/go-junglebus/models"
-	"github.com/mdp/qrterminal/v3"
 )
 
 // TransportHTTP is the struct for HTTP
@@ -323,9 +322,9 @@ func (h *TransportHTTP) doHTTPJsonRequest(ctx context.Context, method string, pa
 	}
 	if resp.StatusCode == http.StatusPaymentRequired {
 		address := resp.Header.Get("jb-fund-address")
-		buf := bytes.NewBuffer([]byte{})
-		qrterminal.Generate(address, qrterminal.L, buf)
-		log.Printf("WARNING. Free tier exhausted. Please fund your account to continue recieving data: %s\n %s", address, buf.String())
+		// buf := bytes.NewBuffer([]byte{})
+		// qrterminal.Generate(address, qrterminal.L, buf)
+		log.Printf("WARNING. Free tier exhausted. Please fund your account to continue recieving data: %s\n", address)
 	} else if resp.StatusCode >= http.StatusBadRequest {
 		return errors.New("server error: " + strconv.Itoa(resp.StatusCode) + " - " + resp.Status)
 	}
