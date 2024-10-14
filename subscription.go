@@ -290,7 +290,11 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 		})
 	})
 
-	if subs.subscriptions["control"], err = subs.startSubscription(`query:` + subscriptionID + `:control`); err != nil {
+	subType := "query"
+	if options.LiteMode {
+		subType = "lite"
+	}
+	if subs.subscriptions["control"], err = subs.startSubscription(subType + `:` + subscriptionID + `:control`); err != nil {
 		return nil, err
 	}
 	subs.subscriptions["control"].OnPublication(func(e centrifuge.PublicationEvent) {
@@ -300,10 +304,6 @@ func (jb *Client) SubscribeWithQueue(ctx context.Context, subscriptionID string,
 		})
 	})
 
-	subType := "query"
-	if options.LiteMode {
-		subType = "lite"
-	}
 	if eventHandler.OnTransaction != nil {
 		if subs.subscriptions["main"], err = subs.startSubscription(subType + `:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10) + `:` + strconv.FormatUint(currentPage, 10)); err != nil {
 			// if subs.subscriptions["main"], err = subs.startSubscription(`query:` + subscriptionID + `:` + strconv.FormatUint(fromBlock, 10)); err != nil {
