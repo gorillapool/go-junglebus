@@ -216,7 +216,7 @@ func (h *TransportHTTP) doHTTPRequest(ctx context.Context, method string, path s
 
 	var resp *http.Response
 	defer func() {
-		if resp.Body != nil {
+		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
 	}()
